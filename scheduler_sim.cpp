@@ -218,10 +218,246 @@ double expRandom( double lambda )
 }
 
 
+//calculate dynamic quantum for a process
+double calculateQuantum( const Process& proc, double baseQuantum, double scalingA, double scalingB )
+{
+    double quantum = baseQuantum + ( P_LOW - proc.priority ) / scalingA - scalingB * proc.totalExecutedTime;
+
+    //clamp to minimum to prevent negative/zero quantum
+    if( quantum < MIN_QUANTUM )
+    {
+        quantum = MIN_QUANTUM;
+    }
+
+    return quantum;
+}
+
+
 //run the discrete-event simulation
 void runSimulation( double lambda, double avgServiceTime, double baseQuantum,
                     double scalingA, double scalingB )
 {
-    //TODO: implement simulation loop (Part 4 of planning doc)
-    std::cout << "Simulation not yet implemented.\n";
+    //initialize event queue
+    EventQueue eventQueue;
+
+    //initialize ready queue (FIFO for round-robin)
+    std::queue< int > readyQueue;
+
+    //process table - look up any process by PID
+    std::map< int, Process > processTable;
+
+    //simulation state
+    double clock = 0.0;
+    double lastEventTime = 0.0;
+    bool cpuBusy = false;
+    int nextProcessID = 1;
+    int completedProcesses = 0;
+    int currentRunningPID = -1;       //PID of process currently on CPU
+    double currentQuantumUsed = 0.0;  //tracks quantum assigned to current running process
+
+    //metrics
+    double totalTurnaroundTime = 0.0;
+    int totalContextSwitches = 0;
+    double areaUnderQueueCurve = 0.0;
+
+    //per-priority turnaround tracking (for report graph)
+    double priorityTurnaround[11] = { 0.0 };  //index 1-10
+    int priorityCount[11] = { 0 };             //index 1-10
+
+    //output formatting
+    std::cout << std::fixed << std::setprecision( 4 );
+
+    //schedule first arrival
+    double firstArrivalTime = expRandom( lambda );
+    eventQueue.insert( Event( firstArrivalTime, ARRIVAL, nextProcessID ) );
+    nextProcessID++;
+
+    //main simulation loop
+    while( completedProcesses < TOTAL_PROCESSES )
+    {
+        //get next event
+        Event currentEvent = eventQueue.getNextEvent();
+
+        //calculate time since last event
+        double deltaT = currentEvent.eventTime - lastEventTime;
+
+        //update area under queue length curve
+        areaUnderQueueCurve += readyQueue.size() * deltaT;
+
+        //advance clock
+        clock = currentEvent.eventTime;
+        lastEventTime = clock;
+
+        //handle event based on its type
+        if( currentEvent.eventType == ARRIVAL )
+        {
+            //generate process attributes
+            double serviceTime = expRandom( 1.0 / avgServiceTime );
+            int priority = ( rand() % 10 ) + 1;
+
+            //create process and store in process table
+            Process newProc( currentEvent.processID, currentEvent.eventTime, serviceTime, priority );
+            processTable[ currentEvent.processID ] = newProc;
+
+            //schedule next arrival (only if we still need more processes)
+            if( nextProcessID <= TOTAL_PROCESSES )
+            {
+                double interArrivalTime = expRandom( lambda );
+                double nextArrivalTime = currentEvent.eventTime + interArrivalTime;
+                eventQueue.insert( Event( nextArrivalTime, ARRIVAL, nextProcessID ) );
+                nextProcessID++;
+            }
+
+            //check if cpu is idle
+            if( !cpuBusy )
+            {
+                //dispatch this process to CPU
+                cpuBusy = true;
+                currentRunningPID = currentEvent.processID;
+                totalContextSwitches++;
+
+                //calculate dynamic quantum
+                Process& proc = processTable[ currentEvent.processID ];
+                double quantum = calculateQuantum( proc, baseQuantum, scalingA, scalingB );
+                currentQuantumUsed = quantum;
+
+                if( proc.remainingTime <= quantum )
+                {
+                    //process will finish within this quantum
+                    double departureTime = clock + proc.remainingTime;
+                    eventQueue.insert( Event( departureTime, DEPARTURE, currentEvent.processID ) );
+                }
+                else
+                {
+                    //process will be preempted
+                    double preemptTime = clock + quantum;
+                    eventQueue.insert( Event( preemptTime, QUANTUM_EXPIRATION, currentEvent.processID ) );
+                }
+            }
+            else
+            {
+                //cpu is busy - add process to ready queue
+                readyQueue.push( currentEvent.processID );
+            }
+        }
+        else if( currentEvent.eventType == DEPARTURE )
+        {
+            //process has completed
+            Process& proc = processTable[ currentEvent.processID ];
+
+            //update execution time
+            proc.totalExecutedTime += proc.remainingTime;
+            proc.remainingTime = 0.0;
+
+            //calculate turnaround time
+            double turnaroundTime = clock - proc.arrivalTime;
+            totalTurnaroundTime += turnaroundTime;
+
+            //track per-priority turnaround
+            priorityTurnaround[ proc.priority ] += turnaroundTime;
+            priorityCount[ proc.priority ]++;
+
+            //increment completed processes
+            completedProcesses++;
+
+            //remove process from table (no longer needed)
+            processTable.erase( currentEvent.processID );
+
+            //check for waiting processes in the ready queue
+            if( !readyQueue.empty() )
+            {
+                //get the next process from the ready queue
+                int nextProcID = readyQueue.front();
+                readyQueue.pop();
+
+                //dispatch next process
+                currentRunningPID = nextProcID;
+                totalContextSwitches++;
+
+                Process& nextProc = processTable[ nextProcID ];
+                double quantum = calculateQuantum( nextProc, baseQuantum, scalingA, scalingB );
+                currentQuantumUsed = quantum;
+
+                if( nextProc.remainingTime <= quantum )
+                {
+                    double departureTime = clock + nextProc.remainingTime;
+                    eventQueue.insert( Event( departureTime, DEPARTURE, nextProcID ) );
+                }
+                else
+                {
+                    double preemptTime = clock + quantum;
+                    eventQueue.insert( Event( preemptTime, QUANTUM_EXPIRATION, nextProcID ) );
+                }
+            }
+            else
+            {
+                //no process waiting - cpu goes idle
+                cpuBusy = false;
+                currentRunningPID = -1;
+            }
+        }
+        else if( currentEvent.eventType == QUANTUM_EXPIRATION )
+        {
+            //process was preempted - quantum expired
+            Process& proc = processTable[ currentEvent.processID ];
+
+            //update remaining time and total executed time
+            double quantum = currentQuantumUsed;
+            proc.remainingTime -= quantum;
+            proc.totalExecutedTime += quantum;
+
+            //push preempted process to back of ready queue
+            readyQueue.push( currentEvent.processID );
+
+            //dispatch next process from front of ready queue
+            int nextProcID = readyQueue.front();
+            readyQueue.pop();
+
+            currentRunningPID = nextProcID;
+            totalContextSwitches++;
+
+            Process& nextProc = processTable[ nextProcID ];
+            double quantumNext = calculateQuantum( nextProc, baseQuantum, scalingA, scalingB );
+            currentQuantumUsed = quantumNext;
+
+            if( nextProc.remainingTime <= quantumNext )
+            {
+                double departureTime = clock + nextProc.remainingTime;
+                eventQueue.insert( Event( departureTime, DEPARTURE, nextProcID ) );
+            }
+            else
+            {
+                double preemptTime = clock + quantumNext;
+                eventQueue.insert( Event( preemptTime, QUANTUM_EXPIRATION, nextProcID ) );
+            }
+        }
+    }
+
+    //calculate performance metrics
+    double avgTurnaroundTime = totalTurnaroundTime / completedProcesses;
+    double avgContextSwitches = static_cast< double >( totalContextSwitches ) / completedProcesses;
+    double avgQueueLength = areaUnderQueueCurve / clock;
+
+    //display results
+    std::cout << "--- SIMULATION RESULTS ---\n";
+    std::cout << "Simulation Time:           " << clock << " seconds\n";
+    std::cout << "Completed Processes:       " << completedProcesses << "\n";
+    std::cout << "Total Context Switches:    " << totalContextSwitches << "\n";
+    std::cout << "\n--- PERFORMANCE METRICS ---\n";
+    std::cout << "Avg Turnaround Time:       " << avgTurnaroundTime << " seconds\n";
+    std::cout << "Avg Context Switches:      " << avgContextSwitches << " per process\n";
+    std::cout << "Avg Ready Queue Length:    " << avgQueueLength << " processes\n";
+
+    //display per-priority turnaround times
+    std::cout << "\n--- TURNAROUND BY PRIORITY ---\n";
+    for( int p = 1; p <= 10; p++ )
+    {
+        if( priorityCount[ p ] > 0 )
+        {
+            double avgTT = priorityTurnaround[ p ] / priorityCount[ p ];
+            std::cout << "Priority " << std::setw( 2 ) << p
+                      << ": Avg Turnaround = " << avgTT
+                      << " seconds (" << priorityCount[ p ] << " processes)\n";
+        }
+    }
 }
