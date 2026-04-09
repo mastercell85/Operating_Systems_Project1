@@ -41,6 +41,9 @@ scheduler_sim
 # debug information files
 *.dwo
 
+# Build artifacts
+obj/
+
 # IDE files
 .vscode/
 
