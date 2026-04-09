@@ -41,6 +41,9 @@ scheduler_sim
 # debug information files
 *.dwo
 
+# IDE files
+.vscode/
+
 # personal files
 *.log
 *.tmp
