@@ -42,6 +42,5 @@ scheduler_sim
 *.dwo
 
 # personal files
-*.md
 *.log
 *.tmp
