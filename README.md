@@ -20,10 +20,41 @@ where:
 
 High-priority processes receive larger quanta, and processes that have already consumed significant CPU time get smaller quanta — balancing responsiveness with fairness.
 
+## Architecture
+
+The project follows SOLID design principles with a modular multi-file structure:
+
+```
+include/
+  Constants.h          — simulation constants
+  Process.h            — process data structure
+  Event.h              — event and event node structures
+  EventQueue.h         — sorted linked-list priority queue
+  QuantumStrategy.h    — abstract interface + dynamic quantum implementation
+  Scheduler.h          — simulation engine and result struct
+src/
+  main.cpp             — argument parsing and output
+  Scheduler.cpp        — discrete-event simulation loop
+  EventQueue.cpp       — event queue operations
+  DynamicQuantumStrategy.cpp — quantum formula implementation
+```
+
+Key design decisions:
+- **Strategy pattern** for quantum calculation — the `Scheduler` depends on a `QuantumStrategy` interface, not a concrete implementation, making it easy to swap scheduling policies
+- **Dependency injection** — the quantum strategy is passed to the scheduler at construction
+- **DRY** — the repeated dispatch-to-CPU logic (originally duplicated across three event handlers) is extracted into a single `dispatchProcess()` method
+
 ## How to Compile
 
 ```bash
-g++ -std=c++11 -O2 -o scheduler_sim scheduler_sim.cpp
+make                # Linux / macOS
+mingw32-make        # Windows (MSYS2/MinGW)
+```
+
+Or manually:
+
+```bash
+g++ -std=c++17 -Wall -Wextra -O2 -I include -o scheduler_sim src/*.cpp
 ```
 
 ## How to Run
